@@ -16,12 +16,12 @@ CAPTION_TEXT = "*🔥 KÈO THƠM HÔM NAY - VÀO NGAY KẺO LỠ ⚽️*\n\n🔗
 
 # --- CẤU HÌNH WEB & ẢNH ---
 URL = "https://keo.win/keo-bong-da"
-OUTPUT_DIR = r"C:\Users\ECDW0019\Downloads\screenshots"
+OUTPUT_DIR = os.path.join(os.environ.get("RAILWAY_VOLUME_MOUNT_PATH", "/tmp"), "screenshots")
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 FIXED_HEADER_CLIP = {'x':200, 'y': 748, 'width':800, 'height': 68}
-TEMP_HEADER_PATH = os.path.join(OUTPUT_DIR, "fixed_header_clip.png") 
-LOGO_PATH = os.path.join(OUTPUT_DIR, "logo.png") 
+TEMP_HEADER_PATH = os.path.join(OUTPUT_DIR, "fixed_header_clip.png")
+LOGO_PATH = os.path.join(os.getcwd(), "logo.png")
 LOGO_POSITION = (600, 60)
 LOGO_SIZE = (80,50)
 
@@ -284,3 +284,4 @@ if __name__ == "__main__":
              print("\n👋 Đã dừng chương trình (Lỗi Event loop đóng đã được xử lý).")
          else:
              print(f"❌ Lỗi Runtime không xác định: {e}")
+
