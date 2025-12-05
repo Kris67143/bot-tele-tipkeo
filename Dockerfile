@@ -4,38 +4,41 @@ FROM python:3.11-slim
 
 # Cài đặt các dependencies cần thiết cho Playwright/Chromium
 # Các gói cơ bản cho headless Chrome
+# Sửa đoạn RUN apt-get install hiện tại của bạn thành:
 RUN apt-get update && apt-get install -y \
-    libgtk-3-0 \
-    libnspr4 \
+    wget \
+    procps \
     libnss3 \
-    libasound2 \
+    libnspr4 \
+    libcups2 \
     libatk1.0-0 \
     libatk-bridge2.0-0 \
-    libcups2 \
+    libgdk-pixbuf-2.0-0 \
+    libgtk-3-0 \
     libgbm1 \
+    libasound2 \
+    libxcomposite1 \
+    libxrandr2 \
+    libxrender1 \
+    libxtst6 \
+    libfontconfig1 \
     libexpat1 \
     libdbus-1-3 \
     libdrm2 \
-    libgconf-2-4 \
-    libfontconfig1 \
-    libgdk-pixbuf2.0-0 \
     libglib2.0-0 \
     libgnutls30 \
-    libjpeg-turbo8 \
+    libjpeg62-turbo \
     liblcms2-2 \
     libsecret-1-0 \
     libvulkan1 \
-    libwebp6 \
+    libwebp-dev \
     libx11-6 \
-    libxcomposite1 \
     libxdmcp6 \
     libxext6 \
     libxkbcommon0 \
-    libxrandr2 \
-    libxrender1 \
-    wget \
-    --no-install-recommends && rm -rf /var/lib/apt/lists/*
-
+    --no-install-recommends \
+    && rm -rf /var/lib/apt/lists/*
+    
 # Thiết lập thư mục làm việc
 WORKDIR /app
 
