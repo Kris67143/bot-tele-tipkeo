@@ -52,5 +52,5 @@ RUN playwright install chromium
 # Sao chép code
 COPY . .
 
-# Lệnh chạy chính (Giả sử file code là bot_scraper.py)
-CMD ["python", "bot_scraper.py"]
+# Lệnh chạy chính (Giả sử file code là main.py)
+CMD ["python", "main.py"]
