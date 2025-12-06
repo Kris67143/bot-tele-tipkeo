@@ -21,6 +21,9 @@ URL = "https://keo.win/keo-bong-da"
 OUTPUT_DIR = os.path.join(os.environ.get("RAILWAY_VOLUME_MOUNT_PATH", "/tmp"), "screenshots")
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
+# File lưu trữ Message ID cuối cùng
+LAST_MESSAGE_ID_FILE = os.path.join(OUTPUT_DIR, "last_message_id.txt") 
+
 FIXED_HEADER_CLIP = {'x':200, 'y': 800, 'width':800, 'height': 68}
 TEMP_HEADER_PATH = os.path.join(OUTPUT_DIR, "fixed_header_clip.png")
 LOGO_PATH = os.path.join(os.getcwd(), "logo.png")
@@ -42,13 +45,12 @@ MATCHES_TO_KEEP = [
 ]
 
 # --- CACHE (Bộ nhớ đệm) ĐỂ KIỂM TRA ĐÃ GỬI CHƯA ---
-# Lưu trữ: { "Tên giải đấu đã được sanitize": Thời điểm hết hạn (datetime object) }
 SENT_LEAGUES_CACHE = {} 
 CACHE_EXPIRY_SECONDS = 86400 # 24 giờ
-CACHE_LOCK = threading.Lock() # Khóa để đảm bảo an toàn luồng
+CACHE_LOCK = threading.Lock() 
 
 # ----------------------------------------------------------------------
-# HÀM HỖ TRỢ VÀ CACHE
+# HÀM HỖ TRỢ CHUNG VÀ CACHE
 # ----------------------------------------------------------------------
 
 def sanitize(name):
@@ -81,8 +83,6 @@ def mark_league_as_sent(sanitized_league_name):
         expiry_time = datetime.now() + timedelta(seconds=CACHE_EXPIRY_SECONDS)
         SENT_LEAGUES_CACHE[sanitized_league_name] = expiry_time
         print(f"-> Đã đánh dấu '{sanitized_league_name}' là đã gửi. Hết hạn: {expiry_time.strftime('%H:%M:%S')}")
-# ... (Các hàm hỗ trợ khác: capture_fixed_header, stitch_images không thay đổi)
-# ...
 
 def capture_fixed_header(page, clip_rect, output_path):
     """Chụp màn hình một khu vực cố định (tọa độ tuyệt đối) trên trang đã load."""
@@ -130,6 +130,45 @@ def stitch_images(base_path, header_path, logo_path, output_path, logo_size, log
         print(f"❌ Lỗi khi xử lý ảnh: {e}")
         return False
 
+# ----------------------------------------------------------------------
+# HÀM HỖ TRỢ XÓA TIN NHẮN (LƯU TRỮ TRẠNG THÁI)
+# ----------------------------------------------------------------------
+
+def read_last_message_id():
+    """Đọc Message ID cuối cùng đã gửi từ file."""
+    if os.path.exists(LAST_MESSAGE_ID_FILE):
+        try:
+            with open(LAST_MESSAGE_ID_FILE, 'r') as f:
+                return int(f.read().strip())
+        except Exception:
+            return None
+    return None
+
+def save_last_message_id(message_id):
+    """Lưu Message ID mới nhất vào file."""
+    try:
+        with open(LAST_MESSAGE_ID_FILE, 'w') as f:
+            f.write(str(message_id))
+        print(f"-> Đã lưu Message ID mới: {message_id}")
+    except Exception as e:
+        print(f"❌ Lỗi khi lưu Message ID: {e}")
+
+async def delete_last_message(bot, chat_id):
+    """Xóa tin nhắn cũ đã được lưu."""
+    message_id = read_last_message_id()
+    if message_id:
+        try:
+            await bot.delete_message(chat_id=chat_id, message_id=message_id)
+            print(f"✅ Đã xóa tin nhắn cũ có ID: {message_id}")
+        except TelegramError as e:
+            # Lỗi 400 Bad Request (Message to delete not found) là phổ biến và có thể bỏ qua
+            if "message to delete not found" in str(e).lower() or "bad request: message can't be deleted" in str(e).lower():
+                 print(f"⚠️ Tin nhắn cũ ID {message_id} không tồn tại hoặc không thể xóa.")
+            else:
+                print(f"❌ Lỗi khi xóa tin nhắn Telegram: {e}")
+        except Exception as e:
+             print(f"❌ Lỗi không xác định khi xóa tin nhắn: {e}")
+
 
 # --- HÀM LOGIC CHÍNH PLAYWRIGHT (Đồng bộ) ---
 
@@ -159,7 +198,7 @@ def capture_and_stitch_core(p):
         # 1. Tìm giải đấu ưu tiên
         for idx, league in enumerate(leagues):
             league_name = get_league_name_from_element(league, idx)
-            sanitized_name = sanitize(league_name) # Tên đã được làm sạch
+            sanitized_name = sanitize(league_name) 
             league.scroll_into_view_if_needed()
             time.sleep(0.3) 
             
@@ -185,14 +224,13 @@ def capture_and_stitch_core(p):
                     target_league_name = sanitized_name + "_FirstOnWeb"
                     break
                 else:
-                    # Đã được kiểm tra ở vòng lặp trên, nhưng kiểm tra lại để chắc chắn
                     pass 
 
         if target_league:
             target_league.scroll_into_view_if_needed()
             page.wait_for_timeout(1000) 
             
-            # --- LOGIC TÍNH TOÁN BOUNDING BOX (Không thay đổi) ---
+            # --- LOGIC TÍNH TOÁN BOUNDING BOX ---
             title_el = target_league.query_selector(LEAGUE_HEADER_SELECTOR)
             match_rows = target_league.query_selector_all(MATCH_ROW_SELECTOR) 
             
@@ -222,9 +260,9 @@ def capture_and_stitch_core(p):
                 y1 += 50
 
             clip_rect = {
-                "x": 200, # Điều chỉnh x cố định
+                "x": 200, 
                 "y": max(0, y0),
-                "width": 800, # Điều chỉnh width cố định
+                "width": 800, 
                 "height": max(1, y1 - y0)
             }
             
@@ -256,13 +294,12 @@ def capture_and_stitch_core(p):
             browser.close()
             
 # ----------------------------------------------------------------------
-# HÀM WRAPPER (Đồng bộ) và TELEGRAM (Bất đồng bộ) (Không thay đổi)
+# HÀM WRAPPER (Đồng bộ) và TELEGRAM (Bất đồng bộ)
 # ----------------------------------------------------------------------
 
 def capture_and_stitch_wrapper():
     """Hàm bọc đồng bộ để chạy Playwright Sync API."""
     try:
-        # Sử dụng sync_playwright() trong wrapper để đảm bảo tạo và hủy đúng cách
         with sync_playwright() as p:
             return capture_and_stitch_core(p)
     except Exception as e:
@@ -278,35 +315,36 @@ async def send_to_telegram_periodically():
         start_time = time.time()
         print(f"\n[{time.strftime('%H:%M:%S')}] Bắt đầu chu kỳ chụp ảnh...")
         final_image_path = None
-        temp_filepath = None # Khởi tạo biến này để sử dụng trong finally
         
         try:
-            # Chạy hàm Playwright đồng bộ trên một luồng khác
+            # 1. Xóa tin nhắn cũ (nếu có)
+            await delete_last_message(bot, TELEGRAM_CHAT_ID)
+            
+            # 2. Chụp và ghép ảnh mới
             final_image_path = await asyncio.to_thread(capture_and_stitch_wrapper)
 
             if final_image_path and os.path.exists(final_image_path):
                 print(f"✨ Đã hoàn thành ghép ảnh: {final_image_path}")
                 
-                # Gửi ảnh qua Telegram
+                # 3. Gửi ảnh mới qua Telegram
                 with open(final_image_path, 'rb') as photo_file:
-                    await bot.send_photo(
+                    message = await bot.send_photo(
                         chat_id=TELEGRAM_CHAT_ID, 
                         photo=photo_file,
                         caption=CAPTION_TEXT, 
                         parse_mode='Markdown' 
                     )
-                print(f"✅ Đã gửi ảnh thành công qua Telegram.")
+                print(f"✅ Đã gửi ảnh thành công qua Telegram. ID: {message.message_id}")
+                
+                # 4. Lưu Message ID mới để xóa trong chu kỳ tiếp theo
+                save_last_message_id(message.message_id)
                 
                 # Xóa file sau khi gửi thành công
                 os.remove(final_image_path)
                 print(f"Đã xóa file cuối: {final_image_path}")
                 
-                # Cập nhật temp_filepath để xóa file tạm
-                if final_image_path.startswith(os.path.join(OUTPUT_DIR, "TEMP_")):
-                    temp_filepath = final_image_path.replace("TEMP_", "").replace("_FINAL", "")
-
             else:
-                print("⚠️ Bỏ qua chu kỳ: Không tìm thấy giải đấu mới hoặc ảnh bị lỗi.")
+                print("⚠️ Bỏ qua chu kỳ: Không tìm thấy giải đấu mới hoặc ảnh bị lỗi. Giữ tin cũ.")
 
         except TelegramError as e:
             print(f"❌ LỖI TELEGRAM: {e}")
@@ -318,7 +356,6 @@ async def send_to_telegram_periodically():
             if os.path.exists(TEMP_HEADER_PATH):
                 os.remove(TEMP_HEADER_PATH)
             
-            # Xóa file tạm (chỉ cần xóa file gốc TEMP_...png nếu nó vẫn còn)
             temp_files = [f for f in os.listdir(OUTPUT_DIR) if f.startswith("TEMP_") and f.endswith(".png")]
             for temp_f in temp_files:
                 try:
