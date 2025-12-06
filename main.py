@@ -11,7 +11,7 @@ import threading
 # --- CẤU HÌNH BOT TELEGRAM & ĐỊNH KỲ ---
 TELEGRAM_BOT_TOKEN = "8397765740:AAHp2ZTsWifRo9jUguH2qv9EB9rnnoA0uW8"
 TELEGRAM_CHAT_ID = "-1002917428362"
-SEND_INTERVAL_SECONDS = 7200 # 2 giờ
+SEND_INTERVAL_SECONDS = 60 # 2 giờ
 # --- THÔNG ĐIỆP ĐÍNH KÈM ---
 CAPTION_TEXT = "*🔥 KÈO THƠM HÔM NAY - VÀO NGAY KẺO LỠ ⚽️*\n\n🔗 [CƯỢC NGAY](https://bot88.com/signup)"
 
@@ -382,3 +382,4 @@ if __name__ == "__main__":
              print("\n👋 Đã dừng chương trình (Lỗi Event loop đóng đã được xử lý).")
         else:
              print(f"❌ Lỗi Runtime không xác định: {e}")
+
