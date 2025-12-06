@@ -5,16 +5,19 @@ import time
 import asyncio
 from telegram import Bot
 from telegram.error import TelegramError
+from datetime import datetime, timedelta
+import threading
 
 # --- CẤU HÌNH BOT TELEGRAM & ĐỊNH KỲ ---
 TELEGRAM_BOT_TOKEN = "8397765740:AAHp2ZTsWifRo9jUguH2qv9EB9rnnoA0uW8"
 TELEGRAM_CHAT_ID = "-1002917428362"
-SEND_INTERVAL_SECONDS = 7200
+SEND_INTERVAL_SECONDS = 7200 # 2 giờ
 # --- THÔNG ĐIỆP ĐÍNH KÈM ---
 CAPTION_TEXT = "*🔥 KÈO THƠM HÔM NAY - VÀO NGAY KẺO LỠ ⚽️*\n\n🔗 [CƯỢC NGAY](https://bot88.com/signup)"
 
 # --- CẤU HÌNH WEB & ẢNH ---
 URL = "https://keo.win/keo-bong-da"
+# Sử dụng biến môi trường RAILWAY_VOLUME_MOUNT_PATH nếu có, hoặc /tmp
 OUTPUT_DIR = os.path.join(os.environ.get("RAILWAY_VOLUME_MOUNT_PATH", "/tmp"), "screenshots")
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
@@ -38,8 +41,14 @@ MATCHES_TO_KEEP = [
     "V.League 1", "V.League 2", "AFC Cup", "FA Community Shield", "EFL Cup", "UEFA Super Cup", "Seagames"
 ]
 
+# --- CACHE (Bộ nhớ đệm) ĐỂ KIỂM TRA ĐÃ GỬI CHƯA ---
+# Lưu trữ: { "Tên giải đấu đã được sanitize": Thời điểm hết hạn (datetime object) }
+SENT_LEAGUES_CACHE = {} 
+CACHE_EXPIRY_SECONDS = 86400 # 24 giờ
+CACHE_LOCK = threading.Lock() # Khóa để đảm bảo an toàn luồng
+
 # ----------------------------------------------------------------------
-# HÀM HỖ TRỢ VÀ PLAYWRIGHT (Đồng bộ)
+# HÀM HỖ TRỢ VÀ CACHE
 # ----------------------------------------------------------------------
 
 def sanitize(name):
@@ -49,7 +58,31 @@ def sanitize(name):
 def get_league_name_from_element(league_element, idx):
     """Lấy tên giải đấu từ phần tử HTML"""
     title_el = league_element.query_selector(LEAGUE_HEADER_SELECTOR)
-    return title_el.inner_text().strip() if title_el else f"league_{idx}"
+    # Lấy tên giải đấu, cắt bỏ ngày giờ và các ký tự đặc biệt ở cuối (nếu có)
+    name = title_el.inner_text().strip() if title_el else f"league_{idx}"
+    name = re.sub(r'\s*(\d{2}/\d{2}|\d{2}/\d{2}\s*-\s*\d{2}/\d{2}|\(\d{2}/\d{2}\s*-\s*\d{2}/\d{2}\))', '', name).strip()
+    return name
+
+def is_league_already_sent(sanitized_league_name):
+    """Kiểm tra xem giải đấu đã được gửi trong khoảng thời gian hết hạn chưa."""
+    with CACHE_LOCK:
+        if sanitized_league_name in SENT_LEAGUES_CACHE:
+            expiry_time = SENT_LEAGUES_CACHE[sanitized_league_name]
+            if datetime.now() < expiry_time:
+                return True
+            else:
+                # Xóa mục đã hết hạn
+                del SENT_LEAGUES_CACHE[sanitized_league_name]
+        return False
+
+def mark_league_as_sent(sanitized_league_name):
+    """Đánh dấu giải đấu là đã gửi và thiết lập thời gian hết hạn."""
+    with CACHE_LOCK:
+        expiry_time = datetime.now() + timedelta(seconds=CACHE_EXPIRY_SECONDS)
+        SENT_LEAGUES_CACHE[sanitized_league_name] = expiry_time
+        print(f"-> Đã đánh dấu '{sanitized_league_name}' là đã gửi. Hết hạn: {expiry_time.strftime('%H:%M:%S')}")
+# ... (Các hàm hỗ trợ khác: capture_fixed_header, stitch_images không thay đổi)
+# ...
 
 def capture_fixed_header(page, clip_rect, output_path):
     """Chụp màn hình một khu vực cố định (tọa độ tuyệt đối) trên trang đã load."""
@@ -97,6 +130,7 @@ def stitch_images(base_path, header_path, logo_path, output_path, logo_size, log
         print(f"❌ Lỗi khi xử lý ảnh: {e}")
         return False
 
+
 # --- HÀM LOGIC CHÍNH PLAYWRIGHT (Đồng bộ) ---
 
 def capture_and_stitch_core(p):
@@ -125,24 +159,40 @@ def capture_and_stitch_core(p):
         # 1. Tìm giải đấu ưu tiên
         for idx, league in enumerate(leagues):
             league_name = get_league_name_from_element(league, idx)
+            sanitized_name = sanitize(league_name) # Tên đã được làm sạch
             league.scroll_into_view_if_needed()
             time.sleep(0.3) 
             
+            # BỎ QUA các giải đấu đã được gửi trong 24 giờ qua
+            if is_league_already_sent(sanitized_name):
+                print(f"⚠️ Bỏ qua: Giải đấu '{league_name}' đã được gửi trong 24h qua.")
+                continue
+
+            # Kiểm tra tên giải đấu có trong danh sách ưu tiên không
             if any(m.lower() in league_name.lower() for m in MATCHES_TO_KEEP):
                 target_league = league
-                target_league_name = sanitize(league_name + "_Prioritized")
+                target_league_name = sanitized_name + "_Prioritized"
                 break 
         
-        # 2. Nếu không tìm thấy, chọn giải đầu tiên
-        if target_league is None and leagues:
-            target_league = leagues[0]
-            target_league_name = sanitize(get_league_name_from_element(target_league, 0) + "_FirstOnWeb")
+        # 2. Nếu không tìm thấy giải ưu tiên CHƯA GỬI, chọn giải đầu tiên CHƯA GỬI
+        if target_league is None:
+            for idx, league in enumerate(leagues):
+                league_name = get_league_name_from_element(league, idx)
+                sanitized_name = sanitize(league_name)
+                
+                if not is_league_already_sent(sanitized_name):
+                    target_league = league
+                    target_league_name = sanitized_name + "_FirstOnWeb"
+                    break
+                else:
+                    # Đã được kiểm tra ở vòng lặp trên, nhưng kiểm tra lại để chắc chắn
+                    pass 
 
         if target_league:
             target_league.scroll_into_view_if_needed()
             page.wait_for_timeout(1000) 
             
-            # --- LOGIC TÍNH TOÁN BOUNDING BOX ---
+            # --- LOGIC TÍNH TOÁN BOUNDING BOX (Không thay đổi) ---
             title_el = target_league.query_selector(LEAGUE_HEADER_SELECTOR)
             match_rows = target_league.query_selector_all(MATCH_ROW_SELECTOR) 
             
@@ -180,17 +230,22 @@ def capture_and_stitch_core(p):
             
             if clip_rect["width"] > 0 and clip_rect["height"] > 0:
                 temp_filepath = os.path.join(OUTPUT_DIR, f"TEMP_{target_league_name}.png")
+                
+                # Chụp ảnh nội dung chính
                 page.screenshot(path=temp_filepath, clip=clip_rect)
                 
                 final_filepath = os.path.join(OUTPUT_DIR, f"{target_league_name}_FINAL.png")
                 
                 if stitch_images(temp_filepath, TEMP_HEADER_PATH, LOGO_PATH, final_filepath, LOGO_SIZE, LOGO_POSITION):
+                    # Đánh dấu đã gửi thành công trước khi trả về đường dẫn file
+                    mark_league_as_sent(sanitize(get_league_name_from_element(target_league, 0)))
                     return final_filepath
                 else:
                     return None
             else:
                 return None
         else:
+            print("⚠️ Bỏ qua chu kỳ: Không tìm thấy giải đấu nào để gửi (hoặc tất cả đã được gửi).")
             return None
 
     except Exception as e:
@@ -201,7 +256,7 @@ def capture_and_stitch_core(p):
             browser.close()
             
 # ----------------------------------------------------------------------
-# HÀM WRAPPER (Đồng bộ) và TELEGRAM (Bất đồng bộ)
+# HÀM WRAPPER (Đồng bộ) và TELEGRAM (Bất đồng bộ) (Không thay đổi)
 # ----------------------------------------------------------------------
 
 def capture_and_stitch_wrapper():
@@ -223,6 +278,7 @@ async def send_to_telegram_periodically():
         start_time = time.time()
         print(f"\n[{time.strftime('%H:%M:%S')}] Bắt đầu chu kỳ chụp ảnh...")
         final_image_path = None
+        temp_filepath = None # Khởi tạo biến này để sử dụng trong finally
         
         try:
             # Chạy hàm Playwright đồng bộ trên một luồng khác
@@ -244,9 +300,13 @@ async def send_to_telegram_periodically():
                 # Xóa file sau khi gửi thành công
                 os.remove(final_image_path)
                 print(f"Đã xóa file cuối: {final_image_path}")
+                
+                # Cập nhật temp_filepath để xóa file tạm
+                if final_image_path.startswith(os.path.join(OUTPUT_DIR, "TEMP_")):
+                    temp_filepath = final_image_path.replace("TEMP_", "").replace("_FINAL", "")
 
             else:
-                print("⚠️ Bỏ qua chu kỳ: Không tạo được ảnh cuối cùng hoặc ảnh bị lỗi.")
+                print("⚠️ Bỏ qua chu kỳ: Không tìm thấy giải đấu mới hoặc ảnh bị lỗi.")
 
         except TelegramError as e:
             print(f"❌ LỖI TELEGRAM: {e}")
@@ -257,12 +317,15 @@ async def send_to_telegram_periodically():
             # Dọn dẹp các file tạm
             if os.path.exists(TEMP_HEADER_PATH):
                 os.remove(TEMP_HEADER_PATH)
-                # print(f"Đã xóa file Header tạm: {TEMP_HEADER_PATH}") # Có thể bỏ qua log này để gọn hơn
             
-            # Xóa file tạm (nếu tồn tại)
-            if 'temp_filepath' in locals() and os.path.exists(temp_filepath):
-                os.remove(temp_filepath)
-        
+            # Xóa file tạm (chỉ cần xóa file gốc TEMP_...png nếu nó vẫn còn)
+            temp_files = [f for f in os.listdir(OUTPUT_DIR) if f.startswith("TEMP_") and f.endswith(".png")]
+            for temp_f in temp_files:
+                try:
+                    os.remove(os.path.join(OUTPUT_DIR, temp_f))
+                except Exception as e:
+                    print(f"Lỗi khi xóa file tạm {temp_f}: {e}")
+                    
         end_time = time.time()
         elapsed_time = end_time - start_time
         
@@ -272,22 +335,13 @@ async def send_to_telegram_periodically():
 
 
 if __name__ == "__main__":
-    print("🚀 Bắt đầu Bot gửi kèo (Chu kỳ 60s)...")
+    print("🚀 Bắt đầu Bot gửi kèo (Chu kỳ 2h)...")
     try:
         asyncio.run(send_to_telegram_periodically())
     except KeyboardInterrupt:
         print("\n👋 Đã dừng chương trình.")
     except RuntimeError as e:
-         if "Event loop is closed" in str(e):
-             # Lỗi này thường xảy ra khi dừng chương trình, có thể bỏ qua
+        if "Event loop is closed" in str(e):
              print("\n👋 Đã dừng chương trình (Lỗi Event loop đóng đã được xử lý).")
-         else:
+        else:
              print(f"❌ Lỗi Runtime không xác định: {e}")
-
-
-
-
-
-
-
-
